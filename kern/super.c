@@ -1,12 +1,16 @@
 #include <linux/init.h>
 #include <linux/module.h>
 #include <linux/fs.h>
+#include <linux/slab.h>
+#include <linux/buffer_head.h>
 
-#define AUFS_MAGIC		0x13131313
-#define AUFS_ROOT_INO	0x00000000
+#include "super.h"
 
 static void aufs_put_super(struct super_block *sb)
 {
+	if (sb->s_fs_info != NULL)
+		kfree(sb->s_fs_info);
+	sb->s_fs_info = NULL;
 	pr_debug("aufs super block destroyed\n");
 }
 
@@ -14,22 +18,90 @@ static struct super_operations const aufs_super_ops = {
 	.put_super = aufs_put_super,
 };
 
+static struct aufs_super_block *read_super_block(struct super_block *sb)
+{
+	struct aufs_super_block *asb = (struct aufs_super_block *)
+			kzalloc(sizeof(struct aufs_super_block), GFP_NOFS);
+	struct aufs_super_block *dsb = NULL;
+	struct buffer_head *bh = NULL;
+
+	if (!asb)
+	{
+		pr_err("cannot allocate super block\n");
+		return NULL;
+	}
+
+	bh = (struct buffer_head *)sb_bread(sb, 0);
+	if (!bh)
+	{
+		pr_err("cannot read 0 block\n");
+		goto fre;
+	}
+
+	dsb = (struct aufs_super_block *)bh->b_data;
+
+	asb->magic = be32_to_cpu(dsb->magic);
+	asb->block_size = be32_to_cpu(dsb->block_size);
+	asb->blocks_count = be32_to_cpu(dsb->blocks_count);
+	asb->root_ino = be32_to_cpu(dsb->root_ino);
+
+	brelse(bh);
+
+	if (asb->magic != AUFS_MAGIC_NUMBER)
+	{
+		pr_err("wrong maigc number %u\n", (unsigned)asb->magic);
+		goto fre;
+	}
+
+	pr_debug("aufs superblock info:\n"
+				"\tmagic        = %u\n"
+				"\tblock_size   = %u\n"
+				"\tblocks_count = %u\n"
+				"\troot_ino     = %u\n",
+				(unsigned)asb->magic,
+				(unsigned)asb->block_size,
+				(unsigned)asb->blocks_count,
+				(unsigned)asb->root_ino);
+
+	return asb;
+
+fre:
+	kfree(asb);
+	return NULL;
+}
+
 static int aufs_fill_sb(struct super_block *sb, void *data, int silent)
 {
-	struct inode *root = new_inode(sb);
+	struct aufs_super_block *asb = NULL;
+	struct inode *root = NULL;
+
+	asb = read_super_block(sb);
+	if (!asb)
+		return -EINVAL;
+
+	sb->s_magic = asb->magic;
+	sb->s_op = &aufs_super_ops;
+	sb->s_fs_info = asb;
+
+	if (sb_set_blocksize(sb, asb->block_size) == 0)
+	{
+		pr_err("device does not support block size %u\n",
+					(unsigned)asb->block_size);
+		return -EINVAL;
+	}
+
+	root = new_inode(sb);
 	if (!root)
 	{
 		pr_err("inode allocation failed\n");
 		return -ENOMEM;
 	}
 
-	root->i_ino = AUFS_ROOT_INO;
+	root->i_ino = asb->root_ino;
 	root->i_sb = sb;
 	root->i_atime = root->i_mtime = root->i_ctime = CURRENT_TIME;
 	inode_init_owner(root, NULL, S_IFDIR);
 
-	sb->s_magic = AUFS_MAGIC;
-	sb->s_op = &aufs_super_ops;
 	sb->s_root = d_make_root(root);
 	if (!sb->s_root)
 	{
