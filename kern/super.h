@@ -10,6 +10,8 @@ struct aufs_super_block
 	uint32_t magic;
 	uint32_t block_size;
 	uint32_t blocks_count;
+	uint32_t inodes_count;
+	uint32_t start;
 	uint32_t root_ino;
 
 	struct buffer_head *bmap_bh;

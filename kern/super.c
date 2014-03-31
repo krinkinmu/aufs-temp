@@ -55,6 +55,8 @@ static struct aufs_super_block *read_super_block(struct super_block *sb)
 	asb->magic = be32_to_cpu(dsb->magic);
 	asb->block_size = be32_to_cpu(dsb->block_size);
 	asb->blocks_count = be32_to_cpu(dsb->blocks_count);
+	asb->inodes_count = be32_to_cpu(dsb->inodes_count);
+	asb->start = be32_to_cpu(dsb->start);
 	asb->root_ino = be32_to_cpu(dsb->root_ino);
 	brelse(bh);
 
@@ -86,10 +88,14 @@ static struct aufs_super_block *read_super_block(struct super_block *sb)
 				"\tmagic        = %u\n"
 				"\tblock_size   = %u\n"
 				"\tblocks_count = %u\n"
+				"\tinodes_count = %u\n"
+				"\tstart        = %u\n"
 				"\troot_ino     = %u\n",
 				(unsigned)asb->magic,
 				(unsigned)asb->block_size,
 				(unsigned)asb->blocks_count,
+				(unsigned)asb->inodes_count,
+				(unsigned)asb->start,
 				(unsigned)asb->root_ino);
 
 	return asb;

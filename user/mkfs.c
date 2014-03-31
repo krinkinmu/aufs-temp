@@ -2,6 +2,7 @@
 #include <arpa/inet.h>
 #include <sys/types.h>
 #include <sys/ioctl.h>
+#include <sys/stat.h>
 #include <linux/fs.h>
 #include <stdlib.h>
 #include <assert.h>
@@ -9,14 +10,13 @@
 #include <string.h>
 #include <fcntl.h>
 #include <stdio.h>
+#include <time.h>
 
 #define AUFS_DEFAULT_BLOCK_BITS		0x0000000Cu
-#define AUFS_DEFAULT_ROOT_INO		0x00000000u
 #define AUFS_DEFAULT_BLOCKS_COUNT	0x00000000u
 #define AUFS_MAGIC_NUMBER			0x13131313u
 
 static uint32_t block_bits = AUFS_DEFAULT_BLOCK_BITS;
-static uint32_t root_ino = AUFS_DEFAULT_ROOT_INO;
 static uint32_t blocks_count = AUFS_DEFAULT_BLOCKS_COUNT;
 
 struct aufs_super_block
@@ -24,7 +24,20 @@ struct aufs_super_block
 	uint32_t magic;
 	uint32_t block_size;
 	uint32_t blocks_count;
+	uint32_t inodes_count;
+	uint32_t start;
 	uint32_t root_ino;
+};
+
+struct aufs_inode
+{
+	uint32_t block;
+	uint32_t length;
+	uint32_t mode;
+	uint32_t ino;
+	uint32_t uid;
+	uint32_t gid;
+	uint64_t ctime;
 };
 
 static int bdev_size(int fd, uint32_t *size)
@@ -60,6 +73,16 @@ static int write_block(int fd, uint8_t const *block, size_t size)
 	}
 
 	return 0;
+}
+
+static int write_block_at(int fd, uint8_t const *block, size_t size, off_t off)
+{
+	off_t const old = lseek(fd, 0, SEEK_CUR);
+	int ret = 0;
+	lseek(fd, off, SEEK_SET);
+	ret = write_block(fd, block, size);
+	lseek(fd, old, SEEK_SET);
+	return ret;
 }
 
 static void clear_bits(size_t from, size_t to, uint8_t *bits)
@@ -112,36 +135,140 @@ static void set_bits(size_t from, size_t to, uint8_t *bits)
 		*(bits + end) |= finish;
 }
 
-static void fill_bmap(uint8_t *bm)
+static void fill_bmap(struct aufs_super_block *sb, uint8_t *bm)
 {
-	set_bits(0, 3, bm);
-	clear_bits(3, (1 << block_bits) << 3, bm);
-	set_bits((1 << block_bits) << 3, blocks_count, bm);
+	uint32_t const blk_size = ntohl(sb->block_size);
+	uint32_t const blk_count = ntohl(sb->blocks_count);
+	uint32_t const start_blk = ntohl(sb->start);
+
+	set_bits(0, start_blk, bm);
+	clear_bits(start_blk, blk_count, bm);
+	set_bits(blk_count, blk_size << 3, bm);
 }
 
-static void fill_imap(uint8_t *im)
+static void fill_imap(struct aufs_super_block *sb, uint8_t *im)
 {
-	set_bits(0, 1, im);
-	clear_bits(1, (1 << block_bits) << 3, im);
+	uint32_t const blk_size = ntohl(sb->block_size);
+	uint32_t const ino_count = ntohl(sb->inodes_count);
+
+	clear_bits(0, ino_count, im);
+	set_bits(ino_count, blk_size << 3, im);
+}
+
+static int find_clear(struct aufs_super_block *sb, uint8_t const *bm, size_t *no)
+{
+	size_t it = 0, bit = 0;
+
+	for (; (it < ntohl(sb->block_size)) && (bm[it] == (uint8_t)0xFF); ++it);
+
+	if (it == ntohl(sb->block_size))
+		return 0;
+
+	while ((bm[it] >> bit) % 2 == 1)
+		++bit;
+
+	*no = (it << 3) + bit;
+
+	return 1;
+}
+
+static int alloc_block(struct aufs_super_block *sb, uint8_t *bm, size_t *no)
+{
+	int const ret = find_clear(sb, bm, no);
+	if (ret)
+		set_bits(*no, *no + 1, bm);
+	return ret;
+}
+
+static int alloc_inode(struct aufs_super_block *sb, uint8_t *im, size_t *no)
+{
+	int const ret = find_clear(sb, im, no);
+	if (ret)
+		set_bits(*no, *no + 1, im);
+	return ret;
+}
+
+static void free_inode(struct aufs_super_block *sb, uint8_t *im, size_t no)
+{
+	(void)sb;
+	clear_bits(no, no + 1, im);
+}
+
+static int initialize_root(int fd, struct aufs_super_block *sb,
+							uint8_t *bm, uint8_t *im)
+{
+	size_t root_ino = 0, inode_blk = 0, inode_of = 0, data_block = 0;
+	size_t const block_size = 1 << block_bits;
+	size_t const ino_in_blk = block_size / sizeof(struct aufs_inode);
+	struct aufs_inode *inode = (struct aufs_inode *)calloc(block_size, 1);
+	mode_t const max = S_IRWXU | S_IRWXG | S_IRWXO;
+	mode_t const old = umask(max);
+
+	int ret = 0;
+
+	umask(old);
+
+	ret = alloc_inode(sb, im, &root_ino);
+	if (!ret)
+		goto ext;
+
+	ret = alloc_block(sb, bm, &data_block);
+	if (!ret)
+	{
+		free_inode(sb, im, root_ino);
+		goto ext;
+	}
+
+	inode_blk = 3 + root_ino / ino_in_blk;
+	inode_of = root_ino % ino_in_blk;
+
+	sb->root_ino = (uint32_t)htonl(root_ino);
+	inode[inode_of].block = (uint32_t)htonl(data_block);
+	inode[inode_of].length = (uint32_t)htonl(0);
+	inode[inode_of].mode = (uint32_t)htonl(S_IFDIR | (max & ~old));
+	inode[inode_of].ino = (uint32_t)htonl(root_ino);
+	inode[inode_of].uid = (uint32_t)htonl(getuid());
+	inode[inode_of].gid = (uint32_t)htonl(getgid());
+	inode[inode_of].ctime = (uint64_t)(htonl(time(NULL)));
+
+	ret = write_block_at(fd, (uint8_t const *)inode, block_size, inode_blk);
+
+ext:
+	free(inode);
+	return ret;
 }
 
 static int format(int fd)
 {
-	uint8_t *data = (uint8_t *)calloc(3 * (1 << block_bits), 1);
+	uint32_t const blk_count = blocks_count;
+	uint32_t const blk_size = (1 << block_bits);
+	uint32_t const ino_in_blk = blk_size / sizeof(struct aufs_inode);
+	uint32_t const iblks = (blk_count - 3)/(ino_in_blk - 1);
+	uint32_t const start_blk = 3 + iblks;
+	uint32_t const ino_count = ino_in_blk * iblks;
+	uint32_t const header_size = 3 * blk_size;
+
+	uint8_t *data = (uint8_t *)calloc(header_size, 1);
 	struct aufs_super_block *sb = (struct aufs_super_block *)data;
-	uint8_t *bm = data + (1 << block_bits);
-	uint8_t *im = data + (1 << (block_bits + 1));
+	uint8_t *bm = data + blk_size;
+	uint8_t *im = data + 2 * blk_size;
 	int ret = 0;
 
 	sb->magic = (uint32_t)htonl(AUFS_MAGIC_NUMBER);
-	sb->block_size = (uint32_t)htonl(1 << block_bits);
-	sb->blocks_count = (uint32_t)htonl(blocks_count);
-	sb->root_ino = (uint32_t)htonl(root_ino);
+	sb->block_size = (uint32_t)htonl(blk_size);
+	sb->blocks_count = (uint32_t)htonl(blk_count);
+	sb->inodes_count = (uint32_t)htonl(ino_count);
+	sb->start = (uint32_t)htonl(start_blk);
 
-	fill_bmap(bm);
-	fill_imap(im);
+	fill_bmap(sb, bm);
+	fill_imap(sb, im);
 
-	ret = write_block(fd, (uint8_t const *)sb, 3 * (1 << block_bits));
+	ret = initialize_root(fd, sb, bm, im);
+	if (ret == 0)
+		write_block_at(fd, (uint8_t const *)sb, header_size, 0);
+	else
+		printf("err\n");
+
 	free(sb);
 	return ret;
 }
