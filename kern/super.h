@@ -21,4 +21,9 @@ struct aufs_super_block
 	uint8_t *imap;
 };
 
+static inline struct aufs_super_block *AUFS_SB(struct super_block *sb)
+{
+	return (struct aufs_super_block *)sb->s_fs_info;
+}
+
 #endif /*__SUPER_H__*/

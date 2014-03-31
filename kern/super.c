@@ -1,10 +1,10 @@
 #include <linux/init.h>
 #include <linux/module.h>
-#include <linux/fs.h>
 #include <linux/slab.h>
-#include <linux/buffer_head.h>
+#include <linux/printk.h>
 
 #include "super.h"
+#include "inode.h"
 
 static void aufs_put_super(struct super_block *sb)
 {
@@ -28,6 +28,8 @@ static void aufs_put_super(struct super_block *sb)
 }
 
 static struct super_operations const aufs_super_ops = {
+	.alloc_inode = aufs_alloc_inode,
+	.destroy_inode = aufs_destroy_inode,
 	.put_super = aufs_put_super,
 };
 
@@ -168,18 +170,27 @@ static struct file_system_type aufs_type = {
 
 static int __init aufs_init(void)
 {
-	int const ret = register_filesystem(&aufs_type);
-	if (ret == 0)
-		pr_debug("aufs module loaded\n");
-	else
-		pr_err("aufs loading failed\n");
-	return ret;
+	int ret = aufs_create_inode_cache();
+	if (ret)
+	{
+		pr_err("cannot create inode cache\n");
+		return ret;
+	}
+	ret = register_filesystem(&aufs_type);
+	if (ret)
+	{
+		aufs_destroy_inode_cache();
+		pr_err("cannot register filesystem\n");
+		return ret;
+	}
+	pr_debug("aufs module loaded\n");
+	return 0;
 }
 
 static void __exit aufs_fini(void)
 {
-	int const ret = unregister_filesystem(&aufs_type);
-	if (ret != 0)
+	aufs_destroy_inode_cache();
+	if (unregister_filesystem(&aufs_type))
 		pr_err("aufs unregistering failed\n");
 	pr_debug("aufs module unloaded\n");
 }
