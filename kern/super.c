@@ -8,8 +8,21 @@
 
 static void aufs_put_super(struct super_block *sb)
 {
-	if (sb->s_fs_info != NULL)
-		kfree(sb->s_fs_info);
+	struct aufs_super_block *asb = (struct aufs_super_block *)sb->s_fs_info;
+	if (asb != NULL)
+	{
+		if (asb->bmap_bh)
+		{
+			sync_dirty_buffer(asb->bmap_bh);
+			brelse(asb->bmap_bh);
+		}
+		if (asb->imap_bh)
+		{
+			sync_dirty_buffer(asb->imap_bh);
+			brelse(asb->imap_bh);
+		}
+		kfree(asb);
+	}
 	sb->s_fs_info = NULL;
 	pr_debug("aufs super block destroyed\n");
 }
@@ -31,7 +44,7 @@ static struct aufs_super_block *read_super_block(struct super_block *sb)
 		return NULL;
 	}
 
-	bh = (struct buffer_head *)sb_bread(sb, 0);
+	bh = sb_bread(sb, 0);
 	if (!bh)
 	{
 		pr_err("cannot read 0 block\n");
@@ -39,12 +52,10 @@ static struct aufs_super_block *read_super_block(struct super_block *sb)
 	}
 
 	dsb = (struct aufs_super_block *)bh->b_data;
-
 	asb->magic = be32_to_cpu(dsb->magic);
 	asb->block_size = be32_to_cpu(dsb->block_size);
 	asb->blocks_count = be32_to_cpu(dsb->blocks_count);
 	asb->root_ino = be32_to_cpu(dsb->root_ino);
-
 	brelse(bh);
 
 	if (asb->magic != AUFS_MAGIC_NUMBER)
@@ -52,6 +63,24 @@ static struct aufs_super_block *read_super_block(struct super_block *sb)
 		pr_err("wrong maigc number %u\n", (unsigned)asb->magic);
 		goto fre;
 	}
+
+	asb->bmap_bh = sb_bread(sb, 1);
+	if (!asb->bmap_bh)
+	{
+		pr_err("cannot read blocks map\n");
+		goto fre;
+	}
+
+	asb->imap_bh = sb_bread(sb, 2);
+	if (!asb->imap_bh)
+	{
+		brelse(asb->bmap_bh);
+		pr_err("cannot read inodes map\n");
+		goto fre;
+	}
+
+	asb->bmap = (uint8_t *)asb->bmap_bh->b_data;
+	asb->imap = (uint8_t *)asb->imap_bh->b_data;
 
 	pr_debug("aufs superblock info:\n"
 				"\tmagic        = %u\n"

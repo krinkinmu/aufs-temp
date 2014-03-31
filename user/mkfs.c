@@ -62,17 +62,86 @@ static int write_block(int fd, uint8_t const *block, size_t size)
 	return 0;
 }
 
+static void clear_bits(size_t from, size_t to, uint8_t *bits)
+{
+	size_t const begin = (from + 7) >> 3;
+	size_t const end = to >> 3;
+
+	uint8_t const start = (uint8_t)(0xFF >> ((begin << 3) - from));
+	uint8_t const finish = (uint8_t)(0xFF << (to - (end << 3)));
+
+	size_t it = begin;
+	for (; it < end; ++it)
+		*(bits + it) &= (uint8_t)0x00;
+
+	if (begin - 1 == end)
+	{
+		*(bits + end) &= (start | finish);
+		return;
+	}
+
+	if ((end << 3) != from)
+		*(bits + begin - 1) &= start;
+
+	if ((end << 3) != to)
+		*(bits + end) &= finish;
+}
+
+static void set_bits(size_t from, size_t to, uint8_t *bits)
+{
+	size_t const begin = (from + 7) >> 3;
+	size_t const end = to >> 3;
+
+	uint8_t const start = ~(uint8_t)(0xFF >> ((begin << 3) - from));
+	uint8_t const finish = ~(uint8_t)(0xFF << (to - (end << 3)));
+
+	size_t it = begin;
+	for (; it < end; ++it)
+		*(bits + it) |= (uint8_t)0xFF;
+
+	if (begin - 1 == end)
+	{
+		*(bits + end) |= (start & finish);
+		return;
+	}
+
+	if ((begin << 3) != from)
+		*(bits + begin - 1) |= start;
+
+	if ((end << 3) != to)
+		*(bits + end) |= finish;
+}
+
+static void fill_bmap(uint8_t *bm)
+{
+	set_bits(0, 3, bm);
+	clear_bits(3, (1 << block_bits) << 3, bm);
+	set_bits((1 << block_bits) << 3, blocks_count, bm);
+}
+
+static void fill_imap(uint8_t *im)
+{
+	set_bits(0, 1, im);
+	clear_bits(1, (1 << block_bits) << 3, im);
+}
+
 static int format(int fd)
 {
-	struct aufs_super_block *sb =
-		(struct aufs_super_block *)calloc(1 << block_bits, 1);
+	uint8_t *data = (uint8_t *)calloc(3 * (1 << block_bits), 1);
+	struct aufs_super_block *sb = (struct aufs_super_block *)data;
+	uint8_t *bm = data + (1 << block_bits);
+	uint8_t *im = data + (1 << (block_bits + 1));
 	int ret = 0;
 
 	sb->magic = (uint32_t)htonl(AUFS_MAGIC_NUMBER);
 	sb->block_size = (uint32_t)htonl(1 << block_bits);
 	sb->blocks_count = (uint32_t)htonl(blocks_count);
 	sb->root_ino = (uint32_t)htonl(root_ino);
-	ret = write_block(fd, (uint8_t const *)sb, 1 << block_bits);
+
+	fill_bmap(bm);
+	fill_imap(im);
+
+	ret = write_block(fd, (uint8_t const *)sb, 3 * (1 << block_bits));
 	free(sb);
 	return ret;
 }
