@@ -17,9 +17,10 @@ struct aufs_dinode
 struct aufs_inode
 {
 	uint32_t block;
-	uint32_t length;
 	struct inode vfs_inode;
 };
+
+struct inode *aufs_inode_get(struct super_block *sb, uint32_t no);
 
 int aufs_create_inode_cache(void);
 void aufs_destroy_inode_cache(void);

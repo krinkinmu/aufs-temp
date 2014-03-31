@@ -127,17 +127,9 @@ static int aufs_fill_sb(struct super_block *sb, void *data, int silent)
 		return -EINVAL;
 	}
 
-	root = new_inode(sb);
-	if (!root)
-	{
-		pr_err("inode allocation failed\n");
-		return -ENOMEM;
-	}
-
-	root->i_ino = asb->root_ino;
-	root->i_sb = sb;
-	root->i_atime = root->i_mtime = root->i_ctime = CURRENT_TIME;
-	inode_init_owner(root, NULL, S_IFDIR);
+	root = aufs_inode_get(sb, asb->root_ino);
+	if (IS_ERR(root))
+		return PTR_ERR(root);
 
 	sb->s_root = d_make_root(root);
 	if (!sb->s_root)
