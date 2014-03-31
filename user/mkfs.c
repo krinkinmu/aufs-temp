@@ -231,7 +231,7 @@ static int initialize_root(int fd, struct aufs_super_block *sb,
 	inode[inode_of].gid = (uint32_t)htonl(getgid());
 	inode[inode_of].ctime = (uint64_t)(htonl(time(NULL)));
 
-	ret = write_block_at(fd, (uint8_t const *)inode, block_size, inode_blk);
+	ret = write_block_at(fd, (uint8_t const *)inode, block_size, block_size * inode_blk);
 
 ext:
 	free(inode);
