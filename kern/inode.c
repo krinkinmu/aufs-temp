@@ -4,7 +4,7 @@
 #include "super.h"
 #include "inode.h"
 
-#define AUFS_FILENAME_MAXLEN	0x000000E0
+#define AUFS_FILENAME_MAXLEN	0x000000FB
 
 struct aufs_dir_entry
 {
@@ -99,6 +99,10 @@ static int aufs_iterate(struct file *fp, struct dir_context *ctx)
 	for (; slot < slots; ++slot)
 	{
 		struct aufs_dir_entry const *const entry = entries + slot;
+		if (!strcmp(entry->name, ".") && !dir_emit_dot(fp, ctx))
+			break;
+		if (!strcmp(entry->name, "..") && !dir_emit_dotdot(fp, ctx))
+			break;
 		if (!dir_emit(ctx, entry->name, strlen(entry->name),
 					be32_to_cpu(entry->inode_no), DT_UNKNOWN))
 			break;
@@ -112,6 +116,8 @@ static int aufs_iterate(struct file *fp, struct dir_context *ctx)
 
 static struct file_operations const aufs_dir_file_ops = {
 	.iterate = aufs_iterate,
+	.llseek = generic_file_llseek,
+	.read = generic_read_dir,
 };
 
 struct inode *aufs_inode_get(struct super_block *sb, uint32_t no)
