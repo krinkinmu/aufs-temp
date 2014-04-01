@@ -22,9 +22,6 @@ static uint32_t aufs_find_entry(struct inode *inode, char const *name,
 	struct buffer_head *bh = NULL;
 	size_t slots = 0, slot = 0;
 
-	if (inode->i_size & (sizeof(struct aufs_dir_entry) - 1))
-		pr_warn("directory size is not multiple of directory entry size\n");
-
 	slots = inode->i_size / sizeof(struct aufs_dir_entry);
 
 	bh = sb_bread(inode->i_sb, ai->block);
@@ -58,16 +55,63 @@ static struct dentry *aufs_lookup(struct inode *dir, struct dentry *dentry,
 	if (dentry->d_name.len <= 0 || dentry->d_name.len >= AUFS_FILENAME_MAXLEN)
 		return NULL;
 
+	if (dir->i_size & (sizeof(struct aufs_dir_entry) - 1))
+		pr_warn("directory size is not multiple of directory entry size\n");
+
 	pr_debug("aufs lookup called for %s\n", dentry->d_name.name);
+
 	ino = aufs_find_entry(dir, dentry->d_name.name, (size_t)dentry->d_name.len);
 	if (ino)
 		inode = aufs_inode_get(dir->i_sb, ino);
 
-	return d_splice_alias(inode, dentry);
+	if (inode)
+		d_add(dentry, inode);
+
+	return NULL;
 }
 
 static struct inode_operations const aufs_dir_inode_ops = {
 	.lookup = aufs_lookup,
+};
+
+static int aufs_iterate(struct file *fp, struct dir_context *ctx)
+{
+	struct inode *inode = file_inode(fp);
+	struct aufs_inode *ai = AUFS_I(inode);
+	struct aufs_dir_entry *entries = NULL;
+	struct buffer_head *bh = NULL;
+	size_t slots = 0, slot = 0;
+
+	if (inode->i_size & (sizeof(struct aufs_dir_entry) - 1))
+		pr_warn("directory size is not multiple of directory entry size\n");
+
+	slots = inode->i_size / sizeof(struct aufs_dir_entry);
+	slot = ctx->pos / sizeof(struct aufs_dir_entry);
+
+	bh = sb_bread(inode->i_sb, ai->block);
+	if (!bh)
+	{
+		pr_err("cannot read block %u\n", (unsigned)ai->block);
+		return 0;
+	}
+
+	entries = (struct aufs_dir_entry *)bh->b_data;
+	for (; slot < slots; ++slot)
+	{
+		struct aufs_dir_entry const *const entry = entries + slot;
+		if (!dir_emit(ctx, entry->name, strlen(entry->name),
+					be32_to_cpu(entry->inode_no), DT_UNKNOWN))
+			break;
+	}
+
+	brelse(bh);
+	ctx->pos = slot * sizeof(struct aufs_dir_entry);
+
+	return 0;
+}
+
+static struct file_operations const aufs_dir_file_ops = {
+	.iterate = aufs_iterate,
 };
 
 struct inode *aufs_inode_get(struct super_block *sb, uint32_t no)
@@ -120,6 +164,7 @@ struct inode *aufs_inode_get(struct super_block *sb, uint32_t no)
 	{
 	case S_IFDIR:
 		inode->i_op = &aufs_dir_inode_ops;
+		inode->i_fop = &aufs_dir_file_ops;
 		break;
 	default:
 		pr_err("undefined inode format %x\n",
