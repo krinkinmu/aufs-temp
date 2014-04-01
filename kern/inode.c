@@ -82,11 +82,19 @@ static int aufs_iterate(struct file *fp, struct dir_context *ctx)
 	struct buffer_head *bh = NULL;
 	size_t slots = 0, slot = 0;
 
+	pr_debug("aufs readdir %s\n", (char const *)fp->f_path.dentry->d_name.name);
+
 	if (inode->i_size & (sizeof(struct aufs_dir_entry) - 1))
 		pr_warn("directory size is not multiple of directory entry size\n");
 
 	slots = inode->i_size / sizeof(struct aufs_dir_entry);
 	slot = ctx->pos / sizeof(struct aufs_dir_entry);
+
+	if ((ctx->pos == 0 || ctx->pos == 1) && !dir_emit_dots(fp, ctx))
+		return 0;
+
+	if (slot >= slots)
+		return 0;
 
 	bh = sb_bread(inode->i_sb, ai->block);
 	if (!bh)
@@ -99,10 +107,6 @@ static int aufs_iterate(struct file *fp, struct dir_context *ctx)
 	for (; slot < slots; ++slot)
 	{
 		struct aufs_dir_entry const *const entry = entries + slot;
-		if (!strcmp(entry->name, ".") && !dir_emit_dot(fp, ctx))
-			break;
-		if (!strcmp(entry->name, "..") && !dir_emit_dotdot(fp, ctx))
-			break;
 		if (!dir_emit(ctx, entry->name, strlen(entry->name),
 					be32_to_cpu(entry->inode_no), DT_UNKNOWN))
 			break;

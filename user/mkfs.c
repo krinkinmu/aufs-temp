@@ -202,30 +202,6 @@ static void free_inode(struct aufs_super_block *sb, uint8_t *im, size_t no)
 	clear_bits(no, no + 1, im);
 }
 
-static int mk_empty_dir(struct aufs_super_block *sb, int fd, struct aufs_inode *dir, struct aufs_inode *parent)
-{
-	uint32_t const blk_size = ntohl(sb->block_size);
-	uint32_t const blk_no = ntohl(dir->block);
-	uint8_t *block = (uint8_t *)calloc(blk_size, 1);
-	struct aufs_dir_entry *entries = (struct aufs_dir_entry *)block;
-	int ret = 0;
-
-	strcpy(entries[0].name, ".");
-	entries[0].inode_no = dir->ino;
-
-	strcpy(entries[1].name, "..");
-	if (parent)
-		entries[1].inode_no = parent->ino;
-	else
-		entries[1].inode_no = dir->ino;
-	dir->length = (uint32_t)htonl(sizeof(struct aufs_dir_entry) << 1);
-	
-	ret = write_block_at(fd, block, blk_size, blk_size * blk_no);
-
-	free(block);
-	return ret;
-}
-
 static int initialize_root(int fd, struct aufs_super_block *sb,
 							uint8_t *bm, uint8_t *im)
 {
@@ -263,9 +239,7 @@ static int initialize_root(int fd, struct aufs_super_block *sb,
 	inode[inode_of].gid = (uint32_t)htonl(getgid());
 	inode[inode_of].ctime = (uint64_t)(htonl(time(NULL)));
 	
-	ret = mk_empty_dir(sb, fd, inode + inode_of, NULL);
-	if (ret == 0)
-		ret = write_block_at(fd, (uint8_t const *)inode, block_size, block_size * inode_blk);
+	ret = write_block_at(fd, (uint8_t const *)inode, block_size, block_size * inode_blk);
 
 ext:
 	free(inode);
