@@ -4,7 +4,71 @@
 #include "super.h"
 #include "inode.h"
 
+#define AUFS_FILENAME_MAXLEN	0x000000E0
+
+struct aufs_dir_entry
+{
+	char name[AUFS_FILENAME_MAXLEN];
+	__be32 inode_no;
+};
+
 static struct kmem_cache *aufs_inode_cache;
+
+static uint32_t aufs_find_entry(struct inode *inode, char const *name,
+		size_t len)
+{
+	struct aufs_inode const *const ai = AUFS_I(inode);
+	struct aufs_dir_entry *entries = NULL;
+	struct buffer_head *bh = NULL;
+	size_t slots = 0, slot = 0;
+
+	if (inode->i_size & (sizeof(struct aufs_dir_entry) - 1))
+		pr_warn("directory size is not multiple of directory entry size\n");
+
+	slots = inode->i_size / sizeof(struct aufs_dir_entry);
+
+	bh = sb_bread(inode->i_sb, ai->block);
+	if (!bh)
+	{
+		pr_err("cannot read block %u\n", ai->block);
+		return 0;
+	}
+
+	entries = (struct aufs_dir_entry *)bh->b_data;
+	for (; slot < slots; ++slot)
+	{
+		struct aufs_dir_entry const *const entry = entries + slot;
+		if (!strncmp(name, entry->name, len))
+		{
+			brelse(bh);
+			return be32_to_cpu(entry->inode_no);
+		}
+	}
+
+	brelse(bh);
+	return 0;
+}
+
+static struct dentry *aufs_lookup(struct inode *dir, struct dentry *dentry,
+		unsigned int flags)
+{
+	struct inode *inode = NULL;
+	uint32_t ino = 0;
+
+	if (dentry->d_name.len <= 0 || dentry->d_name.len >= AUFS_FILENAME_MAXLEN)
+		return NULL;
+
+	pr_debug("aufs lookup called for %s\n", dentry->d_name.name);
+	ino = aufs_find_entry(dir, dentry->d_name.name, (size_t)dentry->d_name.len);
+	if (ino)
+		inode = aufs_inode_get(dir->i_sb, ino);
+
+	return d_splice_alias(inode, dentry);
+}
+
+static struct inode_operations const aufs_dir_inode_ops = {
+	.lookup = aufs_lookup,
+};
 
 struct inode *aufs_inode_get(struct super_block *sb, uint32_t no)
 {
@@ -51,6 +115,17 @@ struct inode *aufs_inode_get(struct super_block *sb, uint32_t no)
 	i_uid_write(inode, (uid_t)be32_to_cpu(di->uid));
 	i_gid_write(inode, (gid_t)be32_to_cpu(di->gid));
 	brelse(bh);
+
+	switch (inode->i_mode & S_IFMT)
+	{
+	case S_IFDIR:
+		inode->i_op = &aufs_dir_inode_ops;
+		break;
+	default:
+		pr_err("undefined inode format %x\n",
+				(unsigned)inode->i_mode & S_IFMT);
+		break;
+	}
 
 	pr_debug("inode %u info:\n"
 				"\tlength = %u\n"
