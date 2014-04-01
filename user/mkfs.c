@@ -159,7 +159,8 @@ static void fill_imap(struct aufs_super_block *sb, uint8_t *im)
 	uint32_t const blk_size = ntohl(sb->block_size);
 	uint32_t const ino_count = ntohl(sb->inodes_count);
 
-	clear_bits(0, ino_count, im);
+	set_bits(0, 1, im);
+	clear_bits(1, ino_count, im);
 	set_bits(ino_count, blk_size << 3, im);
 }
 
