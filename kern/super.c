@@ -33,7 +33,7 @@ static struct super_operations const aufs_super_ops = {
 	.put_super = aufs_put_super,
 };
 
-static struct aufs_super_block *read_super_block(struct super_block *sb)
+static struct aufs_super_block *aufs_read_super_block(struct super_block *sb)
 {
 	struct aufs_super_block *asb = (struct aufs_super_block *)
 			kzalloc(sizeof(struct aufs_super_block), GFP_NOFS);
@@ -112,7 +112,7 @@ static int aufs_fill_sb(struct super_block *sb, void *data, int silent)
 	struct aufs_super_block *asb = NULL;
 	struct inode *root = NULL;
 
-	asb = read_super_block(sb);
+	asb = aufs_read_super_block(sb);
 	if (!asb)
 		return -EINVAL;
 
