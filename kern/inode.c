@@ -4,7 +4,7 @@
 #include "super.h"
 #include "inode.h"
 
-#define AUFS_FILENAME_MAXLEN	0x000000FB
+#define AUFS_FILENAME_MAXLEN	0x0000001C
 
 struct aufs_dir_entry
 {
@@ -20,9 +20,7 @@ static uint32_t aufs_find_entry(struct inode *inode, char const *name,
 	struct aufs_inode const *const ai = AUFS_I(inode);
 	struct aufs_dir_entry *entries = NULL;
 	struct buffer_head *bh = NULL;
-	size_t slots = 0, slot = 0;
-
-	slots = inode->i_size / sizeof(struct aufs_dir_entry);
+	size_t slot = 0;
 
 	bh = sb_bread(inode->i_sb, ai->block);
 	if (!bh)
@@ -32,7 +30,7 @@ static uint32_t aufs_find_entry(struct inode *inode, char const *name,
 	}
 
 	entries = (struct aufs_dir_entry *)bh->b_data;
-	for (; slot < slots; ++slot)
+	for (; slot < inode->i_size; ++slot)
 	{
 		struct aufs_dir_entry const *const entry = entries + slot;
 		if (!strncmp(name, entry->name, len))
@@ -41,8 +39,8 @@ static uint32_t aufs_find_entry(struct inode *inode, char const *name,
 			return be32_to_cpu(entry->inode_no);
 		}
 	}
-
 	brelse(bh);
+
 	return 0;
 }
 
@@ -54,9 +52,6 @@ static struct dentry *aufs_lookup(struct inode *dir, struct dentry *dentry,
 
 	if (dentry->d_name.len <= 0 || dentry->d_name.len >= AUFS_FILENAME_MAXLEN)
 		return NULL;
-
-	if (dir->i_size & (sizeof(struct aufs_dir_entry) - 1))
-		pr_warn("directory size is not multiple of directory entry size\n");
 
 	pr_debug("aufs lookup called for %s\n", dentry->d_name.name);
 
@@ -80,20 +75,13 @@ static int aufs_iterate(struct file *fp, struct dir_context *ctx)
 	struct aufs_inode *ai = AUFS_I(inode);
 	struct aufs_dir_entry *entries = NULL;
 	struct buffer_head *bh = NULL;
-	size_t slots = 0, slot = 0;
 
 	pr_debug("aufs readdir %s\n", (char const *)fp->f_path.dentry->d_name.name);
-
-	if (inode->i_size & (sizeof(struct aufs_dir_entry) - 1))
-		pr_warn("directory size is not multiple of directory entry size\n");
-
-	slots = inode->i_size / sizeof(struct aufs_dir_entry);
-	slot = ctx->pos / sizeof(struct aufs_dir_entry);
 
 	if ((ctx->pos == 0 || ctx->pos == 1) && !dir_emit_dots(fp, ctx))
 		return 0;
 
-	if (slot >= slots)
+	if (ctx->pos >= inode->i_size + 2)
 		return 0;
 
 	bh = sb_bread(inode->i_sb, ai->block);
@@ -104,16 +92,14 @@ static int aufs_iterate(struct file *fp, struct dir_context *ctx)
 	}
 
 	entries = (struct aufs_dir_entry *)bh->b_data;
-	for (; slot < slots; ++slot)
+	for (; ctx->pos < inode->i_size + 2; ++ctx->pos)
 	{
-		struct aufs_dir_entry const *const entry = entries + slot;
+		struct aufs_dir_entry const *const entry = entries + ctx->pos - 2;
 		if (!dir_emit(ctx, entry->name, strlen(entry->name),
 					be32_to_cpu(entry->inode_no), DT_UNKNOWN))
 			break;
 	}
-
 	brelse(bh);
-	ctx->pos = slot * sizeof(struct aufs_dir_entry);
 
 	return 0;
 }
@@ -160,7 +146,7 @@ struct inode *aufs_inode_get(struct super_block *sb, uint32_t no)
 	ai->block = be32_to_cpu(di->block);
 	inode->i_mode = be32_to_cpu(di->mode);
 	inode->i_size = be32_to_cpu(di->length);
-	inode->i_blocks = 1;
+	inode->i_blocks = be32_to_cpu(di->blocks);
 	inode->i_ctime.tv_sec = (uint32_t)be64_to_cpu(di->ctime);
 	inode->i_mtime.tv_sec = inode->i_atime.tv_sec =
 			inode->i_ctime.tv_sec;
@@ -185,12 +171,14 @@ struct inode *aufs_inode_get(struct super_block *sb, uint32_t no)
 	pr_debug("inode %u info:\n"
 				"\tlength = %u\n"
 				"\tblock  = %u\n"
+				"\tblocks = %u\n"
 				"\tuid    = %u\n"
 				"\tgid    = %u\n"
 				"\tmode   = %o\n",
 				(unsigned)inode->i_ino,
 				(unsigned)inode->i_size,
 				(unsigned)ai->block,
+				(unsigned)inode->i_blocks,
 				(unsigned)inode->i_uid,
 				(unsigned)inode->i_gid,
 				(unsigned)inode->i_mode);

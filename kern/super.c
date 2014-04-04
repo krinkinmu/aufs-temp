@@ -10,19 +10,7 @@ static void aufs_put_super(struct super_block *sb)
 {
 	struct aufs_super_block *asb = (struct aufs_super_block *)sb->s_fs_info;
 	if (asb != NULL)
-	{
-		if (asb->bmap_bh)
-		{
-			sync_dirty_buffer(asb->bmap_bh);
-			brelse(asb->bmap_bh);
-		}
-		if (asb->imap_bh)
-		{
-			sync_dirty_buffer(asb->imap_bh);
-			brelse(asb->imap_bh);
-		}
 		kfree(asb);
-	}
 	sb->s_fs_info = NULL;
 	pr_debug("aufs super block destroyed\n");
 }
@@ -56,9 +44,6 @@ static struct aufs_super_block *aufs_read_super_block(struct super_block *sb)
 	dsb = (struct aufs_super_block *)bh->b_data;
 	asb->magic = be32_to_cpu(dsb->magic);
 	asb->block_size = be32_to_cpu(dsb->block_size);
-	asb->blocks_count = be32_to_cpu(dsb->blocks_count);
-	asb->inodes_count = be32_to_cpu(dsb->inodes_count);
-	asb->start = be32_to_cpu(dsb->start);
 	asb->root_ino = be32_to_cpu(dsb->root_ino);
 	brelse(bh);
 
@@ -68,36 +53,12 @@ static struct aufs_super_block *aufs_read_super_block(struct super_block *sb)
 		goto fre;
 	}
 
-	asb->bmap_bh = sb_bread(sb, 1);
-	if (!asb->bmap_bh)
-	{
-		pr_err("cannot read blocks map\n");
-		goto fre;
-	}
-
-	asb->imap_bh = sb_bread(sb, 2);
-	if (!asb->imap_bh)
-	{
-		brelse(asb->bmap_bh);
-		pr_err("cannot read inodes map\n");
-		goto fre;
-	}
-
-	asb->bmap = (uint8_t *)asb->bmap_bh->b_data;
-	asb->imap = (uint8_t *)asb->imap_bh->b_data;
-
 	pr_debug("aufs superblock info:\n"
 				"\tmagic        = %u\n"
 				"\tblock_size   = %u\n"
-				"\tblocks_count = %u\n"
-				"\tinodes_count = %u\n"
-				"\tstart        = %u\n"
 				"\troot_ino     = %u\n",
 				(unsigned)asb->magic,
 				(unsigned)asb->block_size,
-				(unsigned)asb->blocks_count,
-				(unsigned)asb->inodes_count,
-				(unsigned)asb->start,
 				(unsigned)asb->root_ino);
 
 	return asb;

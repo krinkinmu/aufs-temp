@@ -6,18 +6,18 @@
 struct aufs_dinode
 {
 	__be32 block;
+	__be32 blocks;
 	__be32 length;
-	__be32 mode;
-	__be32 ino;
 	__be32 uid;
 	__be32 gid;
+	__be32 mode;
 	__be64 ctime;
 };
 
 struct aufs_inode
 {
-	uint32_t block;
 	struct inode vfs_inode;
+	uint32_t block;
 };
 
 struct inode *aufs_inode_get(struct super_block *sb, uint32_t no);
@@ -30,7 +30,7 @@ void aufs_destroy_inode(struct inode *inode);
 
 static inline struct aufs_inode *AUFS_I(struct inode *inode)
 {
-	return container_of(inode, struct aufs_inode, vfs_inode);
+	return (struct aufs_inode *)inode;
 }
 
 #endif /*__INODE_H__*/
