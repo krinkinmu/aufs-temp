@@ -18,28 +18,42 @@ static uint32_t aufs_find_entry(struct inode *inode, char const *name,
 		size_t len)
 {
 	struct aufs_inode const *const ai = AUFS_I(inode);
-	struct aufs_dir_entry *entries = NULL;
-	struct buffer_head *bh = NULL;
-	size_t slot = 0;
+	size_t const block_size = AUFS_SB(inode->i_sb)->block_size;
+	size_t const in_block = block_size / sizeof(struct aufs_dir_entry);
 
-	bh = sb_bread(inode->i_sb, ai->block);
-	if (!bh)
-	{
-		pr_err("cannot read block %u\n", ai->block);
-		return 0;
-	}
+	size_t block = ai->block;
+	size_t end = block + inode->i_blocks;
+	size_t entry = 0;
 
-	entries = (struct aufs_dir_entry *)bh->b_data;
-	for (; slot < inode->i_size; ++slot)
+	pr_debug("read blocks from %u to %u\n", (unsigned)block, (unsigned)end);
+
+	for (; (entry != inode->i_size) && (block != end); ++block)
 	{
-		struct aufs_dir_entry const *const entry = entries + slot;
-		if (!strncmp(name, entry->name, len))
+		size_t const slots = (inode->i_size - entry) < in_block ?
+					(inode->i_size - entry) : in_block;
+		size_t slot = 0;
+		struct aufs_dir_entry *dirs = NULL;
+
+		struct buffer_head *bh = sb_bread(inode->i_sb, block);
+		if (!bh)
 		{
-			brelse(bh);
-			return be32_to_cpu(entry->inode_no);
+			pr_err("find: cannot read block %u\n", (unsigned)block);
+			return 0;
 		}
+
+		dirs = (struct aufs_dir_entry *)bh->b_data;
+		for (; slot != slots; ++slot)
+		{
+			struct aufs_dir_entry const *const dir = dirs + slot;
+			if (!strncmp(name, dir->name, len))
+			{
+				brelse(bh);
+				return be32_to_cpu(dir->inode_no);
+			}
+		}
+		brelse(bh);
+		entry += slot;
 	}
-	brelse(bh);
 
 	return 0;
 }
@@ -73,41 +87,106 @@ static int aufs_iterate(struct file *fp, struct dir_context *ctx)
 {
 	struct inode *inode = file_inode(fp);
 	struct aufs_inode *ai = AUFS_I(inode);
-	struct aufs_dir_entry *entries = NULL;
-	struct buffer_head *bh = NULL;
+	size_t const block_size = AUFS_SB(inode->i_sb)->block_size;
+	size_t const in_block = block_size / sizeof(struct aufs_dir_entry);
+
+	size_t block = 0;
+	size_t end = 0;
+	size_t entry = 0;
 
 	pr_debug("aufs readdir %s\n", (char const *)fp->f_path.dentry->d_name.name);
 
-	if ((ctx->pos == 0 || ctx->pos == 1) && !dir_emit_dots(fp, ctx))
+	if (!dir_emit_dots(fp, ctx))
 		return 0;
 
 	if (ctx->pos >= inode->i_size + 2)
 		return 0;
 
-	bh = sb_bread(inode->i_sb, ai->block);
-	if (!bh)
-	{
-		pr_err("cannot read block %u\n", (unsigned)ai->block);
-		return 0;
-	}
+	block = ai->block + (ctx->pos - 2) / in_block;
+	end = ai->block + inode->i_blocks;
+	entry = ctx->pos - 2;
 
-	entries = (struct aufs_dir_entry *)bh->b_data;
-	for (; ctx->pos < inode->i_size + 2; ++ctx->pos)
+	for (; (entry != inode->i_size) && (block != end); ++block)
 	{
-		struct aufs_dir_entry const *const entry = entries + ctx->pos - 2;
-		if (!dir_emit(ctx, entry->name, strlen(entry->name),
-					be32_to_cpu(entry->inode_no), DT_UNKNOWN))
-			break;
+		size_t const slots = (inode->i_size - entry) < in_block ?
+					(inode->i_size - entry) : in_block;
+		size_t slot = entry % in_block;
+		struct aufs_dir_entry *dirs = NULL;
+
+		struct buffer_head *bh = sb_bread(inode->i_sb, block);
+		if (!bh)
+		{
+			pr_err("iterate: cannot read block %u\n", (unsigned)block);
+			return 0;
+		}
+
+		dirs = (struct aufs_dir_entry *)bh->b_data;
+		for (; slot != slots; ++slot)
+		{
+			struct aufs_dir_entry const *const dir = dirs + slot;
+			if (!dir_emit(ctx, dir->name, strlen(dir->name),
+						be32_to_cpu(dir->inode_no), DT_UNKNOWN))
+				break;
+		}
+		brelse(bh);
+		entry += slot;
 	}
-	brelse(bh);
+	ctx->pos = entry + 2;
 
 	return 0;
 }
 
 static struct file_operations const aufs_dir_file_ops = {
+	.owner = THIS_MODULE,
 	.iterate = aufs_iterate,
 	.llseek = generic_file_llseek,
 	.read = generic_read_dir,
+};
+
+
+ssize_t aufs_read(struct file *fp, char __user *buf, size_t len, loff_t *ppos)
+{
+	struct inode *inode = file_inode(fp);
+	struct aufs_super_block *asb = AUFS_SB(inode->i_sb);
+	struct aufs_inode *ai = AUFS_I(inode);
+	struct buffer_head *bh = NULL;
+
+	size_t const block = ai->block + *ppos / asb->block_size;
+	size_t const offset = *ppos % asb->block_size;
+
+	size_t remain = 0, in_block = 0, count = 0;
+
+	if (*ppos >= inode->i_size)
+		return 0;
+
+	remain = inode->i_size - *ppos;
+	in_block = remain < (asb->block_size - offset) ?
+				remain : asb->block_size - offset;
+	count = len < in_block ? len : in_block;
+
+	bh = sb_bread(inode->i_sb, block);
+	if (!bh)
+	{
+		pr_err("cannot read block %u\n", (unsigned)block);
+		return -EIO;
+	}
+
+	if (copy_to_user(buf, (char const *)bh->b_data + offset, count))
+	{
+		brelse(bh);
+		pr_err("cannot copy buffer_ to userspace\n");
+		return -EFAULT;
+	}
+
+	brelse(bh);
+	*ppos += count;
+
+	return count;
+}
+
+static struct file_operations const aufs_file_file_ops = {
+	.owner = THIS_MODULE,
+	.read = aufs_read,
 };
 
 struct inode *aufs_inode_get(struct super_block *sb, uint32_t no)
@@ -138,7 +217,7 @@ struct inode *aufs_inode_get(struct super_block *sb, uint32_t no)
 	bh = sb_bread(sb, block_no);
 	if (!bh)
 	{
-		pr_err("cannot read block %u\n", (unsigned)block_no);
+		pr_err("inode: cannot read block %u\n", (unsigned)block_no);
 		goto read_error;
 	}
 
@@ -162,6 +241,9 @@ struct inode *aufs_inode_get(struct super_block *sb, uint32_t no)
 		inode->i_op = &aufs_dir_inode_ops;
 		inode->i_fop = &aufs_dir_file_ops;
 		break;
+	case S_IFREG:
+		inode->i_op = &aufs_dir_inode_ops;
+		inode->i_fop = &aufs_file_file_ops;
 	default:
 		pr_err("undefined inode format %x\n",
 				(unsigned)inode->i_mode & S_IFMT);
